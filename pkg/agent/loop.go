@@ -322,6 +322,17 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 // SetMediaStore injects a MediaStore for media lifecycle management.
 func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 	al.mediaStore = s
+
+	// Inject media store into send_file tools across all agents
+	for _, id := range al.registry.ListAgentIDs() {
+		if agent, ok := al.registry.GetAgent(id); ok {
+			if tool, ok := agent.Tools.Get("send_file"); ok {
+				if sft, ok := tool.(*tools.SendFileTool); ok {
+					sft.SetMediaStore(s)
+				}
+			}
+		}
+	}
 }
 
 // inferMediaType determines the media type ("image", "audio", "video", "file")
@@ -999,8 +1010,10 @@ func (al *AgentLoop) runLLMIteration(
 					})
 			}
 
-			// If tool returned media refs, publish them as outbound media
-			if len(toolResult.Media) > 0 && opts.SendResponse {
+			// If tool returned media refs, publish them as outbound media.
+			// Media is always sent immediately regardless of SendResponse,
+			// because the outer Run() loop only handles text responses.
+			if len(toolResult.Media) > 0 {
 				parts := make([]bus.MediaPart, 0, len(toolResult.Media))
 				for _, ref := range toolResult.Media {
 					part := bus.MediaPart{Ref: ref}
@@ -1019,6 +1032,13 @@ func (al *AgentLoop) runLLMIteration(
 					ChatID:  opts.ChatID,
 					Parts:   parts,
 				})
+				logger.InfoCF("agent", "Published outbound media",
+					map[string]any{
+						"tool":    tc.Name,
+						"channel": opts.Channel,
+						"chat_id": opts.ChatID,
+						"parts":   len(parts),
+					})
 			}
 
 			// Determine content for LLM based on tool result
@@ -1056,6 +1076,11 @@ func (al *AgentLoop) updateToolContexts(agent *AgentInstance, channel, chatID st
 		}
 	}
 	if tool, ok := agent.Tools.Get("subagent"); ok {
+		if st, ok := tool.(tools.ContextualTool); ok {
+			st.SetContext(channel, chatID)
+		}
+	}
+	if tool, ok := agent.Tools.Get("send_file"); ok {
 		if st, ok := tool.(tools.ContextualTool); ok {
 			st.SetContext(channel, chatID)
 		}
