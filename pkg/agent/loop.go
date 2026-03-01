@@ -897,8 +897,20 @@ func (al *AgentLoop) runLLMIteration(
 				"target_channel": al.targetReasoningChannelID(opts.Channel),
 				"channel":        opts.Channel,
 			})
+
 		// Check if no tool calls - we're done
 		if len(response.ToolCalls) == 0 {
+			// Send final iteration progress to channel if enabled
+			if agent.ShowIterationProgress && opts.Channel != "" && opts.ChatID != "" {
+				progressMsg := al.buildIterationProgressMessage(iteration, agent.MaxIterations, response, nil)
+				if progressMsg != "" {
+					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+						Channel: opts.Channel,
+						ChatID:  opts.ChatID,
+						Content: progressMsg,
+					})
+				}
+			}
 			finalContent = response.Content
 			logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 				map[string]any{
@@ -912,6 +924,18 @@ func (al *AgentLoop) runLLMIteration(
 		normalizedToolCalls := make([]providers.ToolCall, 0, len(response.ToolCalls))
 		for _, tc := range response.ToolCalls {
 			normalizedToolCalls = append(normalizedToolCalls, providers.NormalizeToolCall(tc))
+		}
+
+		// Send iteration progress to channel if enabled (with tool calls)
+		if agent.ShowIterationProgress && opts.Channel != "" && opts.ChatID != "" {
+			progressMsg := al.buildIterationProgressMessage(iteration, agent.MaxIterations, response, normalizedToolCalls)
+			if progressMsg != "" {
+				al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+					Channel: opts.Channel,
+					ChatID:  opts.ChatID,
+					Content: progressMsg,
+				})
+			}
 		}
 
 		// Log tool calls
@@ -1492,4 +1516,50 @@ func extractParentPeer(msg bus.InboundMessage) *routing.RoutePeer {
 		return nil
 	}
 	return &routing.RoutePeer{Kind: parentKind, ID: parentID}
+}
+
+// buildIterationProgressMessage builds a progress message for LLM iteration.
+// It shows the current iteration, thinking content, and tool calls if any.
+func (al *AgentLoop) buildIterationProgressMessage(
+	iteration, maxIterations int,
+	response *providers.LLMResponse,
+	toolCalls []providers.ToolCall,
+) string {
+	var sb strings.Builder
+
+	// Header with iteration info
+	sb.WriteString(fmt.Sprintf("🔄 **迭代 %d/%d**\n", iteration, maxIterations))
+
+	// Show thinking/reasoning content (truncated)
+	if response.Reasoning != "" {
+		reasoning := response.Reasoning
+		if len(reasoning) > 200 {
+			reasoning = reasoning[:200] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("💭 **思考:** %s\n", reasoning))
+	}
+
+	// Show response content (truncated)
+	if response.Content != "" {
+		content := response.Content
+		if len(content) > 150 {
+			content = content[:150] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("📝 **响应:** %s\n", content))
+	}
+
+	// Show tool calls
+	if len(toolCalls) > 0 {
+		sb.WriteString("🔧 **工具调用:**\n")
+		for _, tc := range toolCalls {
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			argsStr := string(argsJSON)
+			if len(argsStr) > 100 {
+				argsStr = argsStr[:100] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("  - `%s`: %s\n", tc.Name, argsStr))
+		}
+	}
+
+	return sb.String()
 }
