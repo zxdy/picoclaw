@@ -33,6 +33,8 @@ var (
 	reHeading = regexp.MustCompile(`(?m)^(#{1,6})\s+(.+)$`)
 	// Match code blocks (to protect them from heading parsing)
 	reCodeBlock = regexp.MustCompile("(```[\\s\\S]*?```)")
+	// Match markdown images: ![alt](url)
+	reMdImage = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
 )
 
 // cardElement represents an element in Feishu interactive card.
@@ -48,6 +50,10 @@ type cardColumn struct {
 
 // markdownToFeishuCard converts Markdown text to Feishu Interactive Card JSON content string.
 func markdownToFeishuCard(text string) (string, error) {
+	// Pre-process: convert markdown images to links (Feishu Card doesn't support ![](url) syntax)
+	// ![alt](url) → [alt](url) or just the URL if alt is empty
+	text = convertMarkdownImages(text)
+
 	elements := buildCardElements(text)
 
 	card := map[string]any{
@@ -59,6 +65,25 @@ func markdownToFeishuCard(text string) (string, error) {
 
 	data, err := json.Marshal(card)
 	return string(data), err
+}
+
+// convertMarkdownImages converts markdown image syntax to link syntax.
+// Feishu Card doesn't support ![](url), so we convert to [alt](url) or just URL.
+func convertMarkdownImages(text string) string {
+	return reMdImage.ReplaceAllStringFunc(text, func(match string) string {
+		submatches := reMdImage.FindStringSubmatch(match)
+		if len(submatches) >= 3 {
+			alt := submatches[1]
+			url := submatches[2]
+			if alt != "" {
+				// Convert to link: [alt](url)
+				return "[" + alt + "](" + url + ")"
+			}
+			// No alt text, just show URL
+			return url
+		}
+		return match
+	})
 }
 
 // buildCardElements splits content into div/markdown + table elements for Feishu card.
